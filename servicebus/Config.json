@@ -1,0 +1,21 @@
+{
+  "UserConfig": {
+    "Namespaces": [{
+      "Name": "sbemulatorns",
+      "Queues": [{
+        "Name": "sales-events",
+        "Properties": {
+          "DeadLetteringOnMessageExpiration": false,
+          "DefaultMessageTimeToLive": "PT1H",
+          "DuplicateDetectionHistoryTimeWindow": "PT5M",
+          "LockDuration": "PT5M",
+          "MaxDeliveryCount": 5,
+          "RequiresDuplicateDetection": true,
+          "RequiresSession": false
+        }
+      }],
+      "Topics": []
+    }],
+    "Logging": { "Type": "Console" }
+  }
+}

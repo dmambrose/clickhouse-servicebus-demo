@@ -1,0 +1,16 @@
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+WORKDIR /source
+COPY src/ClickHouseDemo.Web/ClickHouseDemo.Web.csproj src/ClickHouseDemo.Web/
+RUN dotnet restore src/ClickHouseDemo.Web/ClickHouseDemo.Web.csproj
+COPY src/ClickHouseDemo.Web/*.cs src/ClickHouseDemo.Web/
+COPY src/Shared/ src/Shared/
+COPY sql/ sql/
+RUN dotnet publish src/ClickHouseDemo.Web/ClickHouseDemo.Web.csproj -c Release -o /app --no-restore
+FROM mcr.microsoft.com/dotnet/aspnet:8.0
+WORKDIR /app
+COPY --from=build /app .
+COPY src/ClickHouseDemo.Web/wwwroot/ ./wwwroot/
+ENV ASPNETCORE_HTTP_PORTS=8080
+USER app
+EXPOSE 8080
+ENTRYPOINT ["dotnet", "ClickHouseDemo.Web.dll"]

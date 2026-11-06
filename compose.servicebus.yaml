@@ -1,0 +1,38 @@
+# Optional local Service Bus pipeline. Combine with compose.yaml.
+services:
+  servicebus-sql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: Y
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: ${SERVICEBUS_SQL_PASSWORD:-LocalDemo_Only!2026}
+      MSSQL_MEMORY_LIMIT_MB: 2048
+    healthcheck:
+      test: ["CMD-SHELL", "SQLCMDPASSWORD=\"$$MSSQL_SA_PASSWORD\" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -Q 'SELECT 1' -b -o /dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+  servicebus:
+    image: mcr.microsoft.com/azure-messaging/servicebus-emulator:latest
+    environment:
+      ACCEPT_EULA: Y
+      SQL_SERVER: servicebus-sql
+      MSSQL_SA_PASSWORD: ${SERVICEBUS_SQL_PASSWORD:-LocalDemo_Only!2026}
+      SQL_WAIT_INTERVAL: 5
+      EMULATOR_HTTP_PORT: 5300
+    volumes:
+      - ./servicebus/Config.json:/ServiceBus_Emulator/ConfigFiles/Config.json:ro
+    ports:
+      - "127.0.0.1:${SERVICEBUS_AMQP_PORT:-15673}:5672"
+      - "127.0.0.1:${SERVICEBUS_HTTP_PORT:-15300}:5300"
+    depends_on:
+      servicebus-sql:
+        condition: service_healthy
+  ui:
+    environment:
+      SERVICEBUS_CONNECTION_STRING: "Endpoint=sb://servicebus;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;"
+      SERVICEBUS_QUEUE: sales-events
+    depends_on:
+      servicebus:
+        condition: service_started
