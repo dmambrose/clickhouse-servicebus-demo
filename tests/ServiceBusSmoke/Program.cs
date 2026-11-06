@@ -13,6 +13,9 @@ try
     stage = "waiting for the broker and worker to become ready";
     await Until(async () => (await Get("/api/pipeline")).GetProperty("state").GetString() is "Ready" or "Processing" or "Paused");
     timeout.CancelAfter(TimeSpan.FromMinutes(5)); // Give delivery tests their own budget after cold emulator startup.
+    using var stream = await EventStream.Open(http, ct);
+    await stream.Next("pipeline", _ => true, ct);
+    await stream.Next("dataChanged", _ => true, ct);
     stage = "pausing the worker";
     await Post("/api/pipeline/pause?paused=true");
     await Until(async () => (await Get("/api/pipeline")).GetProperty("state").GetString() == "Paused");
@@ -31,6 +34,9 @@ try
     var loaded = await Get($"/api/ingestion/{runId}");
     if (loaded.GetProperty("revenue").GetDecimal() != 3_192_962.50m) throw new InvalidOperationException();
     Console.WriteLine($"PASS: run {runId} has 10,000 stored events and revenue 3,192,962.50.");
+    stage = "checking server-pushed ingestion events";
+    await stream.Next("dataChanged", p => p.TryGetProperty("runId", out var run) && run.ValueKind == JsonValueKind.String && run.GetGuid() == runId, ct);
+    Console.WriteLine("PASS: worker inserts generated an SSE data-change notification.");
 
     await using var client = new ServiceBusClient(Environment.GetEnvironmentVariable("SERVICEBUS_CONNECTION_STRING")
         ?? "Endpoint=sb://localhost:15673;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;");

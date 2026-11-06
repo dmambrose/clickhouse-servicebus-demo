@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Azure.Messaging.ServiceBus" Version="7.21.0" />
+    <Compile Include="../LiveUpdatesSmoke/EventStream.cs" Link="EventStream.cs" />
   </ItemGroup>
 </Project>

@@ -16,6 +16,8 @@ docker compose -f compose.yaml -f compose.servicebus.yaml up -d --build ui
 
 Open [the dashboard](http://localhost:5088/) and click **Queue 10,000 events**. Use **Pause worker** and **Resume worker** to see messages wait in the queue before loading into ClickHouse. The All runs view combines stored sales across all runs.
 
+Live updates use **Server-Sent Events (SSE)**. C# pushes status/data-change notifications to the XHTML page, which refreshes the affected reports. See [LIVE-UPDATES.md](LIVE-UPDATES.md) for the implementation and tests.
+
 See [SERVICEBUS.md](SERVICEBUS.md) for emulator requirements and license terms, delivery behavior, and the repeatable integration smoke test. For a ClickHouse-only experience, use the startup below.
 
 ## Interactive XHTML dashboard

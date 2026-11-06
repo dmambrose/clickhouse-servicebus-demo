@@ -3,7 +3,7 @@ using Azure.Messaging.ServiceBus;
 using ClickHouse.Driver.ADO.Parameters;
 
 // One hosted C# worker consumes the queue sequentially. The web app also acts as the producer.
-internal sealed class ServiceBusPipeline(DemoDatabase db, ILogger<ServiceBusPipeline> logger) : BackgroundService
+internal sealed class ServiceBusPipeline(DemoDatabase db, LiveUpdates live, ILogger<ServiceBusPipeline> logger) : BackgroundService
 {
     private readonly string? connectionString = Environment.GetEnvironmentVariable("SERVICEBUS_CONNECTION_STRING");
     private readonly string queueName = Environment.GetEnvironmentVariable("SERVICEBUS_QUEUE") ?? "sales-events";
@@ -18,14 +18,26 @@ internal sealed class ServiceBusPipeline(DemoDatabase db, ILogger<ServiceBusPipe
 
     public object Snapshot() => new
     {
-        enabled = Enabled, queue = queueName, state, paused,
+        enabled = Enabled, queue = queueName, state, paused, dataRevision = live.Revision,
         publishedMessages = Interlocked.Read(ref published),
         completedMessages = Interlocked.Read(ref completed),
         storedEvents = Interlocked.Read(ref stored),
         skippedEvents = Interlocked.Read(ref skipped),
         deadLetteredMessages = Interlocked.Read(ref deadLettered), lastError
     };
-    public void SetPaused(bool value) => paused = value;
+    private void Notify() => live.Publish("pipeline", Snapshot());
+    private void UpdateState(string value, string? error = null)
+    {
+        if (state == value && lastError == error) return;
+        state = value;
+        lastError = error;
+        Notify();
+    }
+    public void SetPaused(bool value)
+    {
+        paused = value;
+        Notify();
+    }
 
     public override Task StartAsync(CancellationToken cancellationToken)
     {
@@ -37,7 +49,7 @@ internal sealed class ServiceBusPipeline(DemoDatabase db, ILogger<ServiceBusPipe
                 RetryOptions = new ServiceBusRetryOptions { MaxRetries = 2, TryTimeout = TimeSpan.FromSeconds(10) }
             });
             sender = client.CreateSender(queueName);
-            state = "Connecting";
+            UpdateState("Connecting");
         }
         return base.StartAsync(cancellationToken);
     }
@@ -57,6 +69,7 @@ internal sealed class ServiceBusPipeline(DemoDatabase db, ILogger<ServiceBusPipe
             };
             await sender.SendMessageAsync(message, ct);
             Interlocked.Increment(ref published);
+            Notify();
             messages++;
         }
         return new { runId, queuedEvents = events.Count, queuedMessages = messages, transport = "servicebus" };
@@ -73,16 +86,15 @@ internal sealed class ServiceBusPipeline(DemoDatabase db, ILogger<ServiceBusPipe
             {
                 if (paused)
                 {
-                    state = "Paused";
+                    UpdateState("Paused");
                     await Task.Delay(300, stoppingToken);
                     continue;
                 }
                 if (!schemaReady) { await db.EnsureSchema(stoppingToken); schemaReady = true; }
                 var message = await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(2), stoppingToken);
-                state = "Ready";
-                lastError = null;
+                UpdateState("Ready");
                 if (message is null) continue;
-                state = "Processing";
+                UpdateState("Processing");
                 try
                 {
                     SalesBatch batch;
@@ -98,6 +110,7 @@ internal sealed class ServiceBusPipeline(DemoDatabase db, ILogger<ServiceBusPipe
                     {
                         await receiver.DeadLetterMessageAsync(message, "InvalidSalesBatch", "Expected 1-1000 events for one sample run.", stoppingToken);
                         Interlocked.Increment(ref deadLettered);
+                        Notify();
                         continue;
                     }
 
@@ -117,33 +130,33 @@ internal sealed class ServiceBusPipeline(DemoDatabase db, ILogger<ServiceBusPipe
                             missing.Select(e => new object[] { e.RunId, e.EventId, e.OccurredAt, e.Product, e.Country, e.Quantity, e.UnitPrice }),
                             cancellationToken: stoppingToken);
                         Interlocked.Add(ref stored, missing.Length);
+                        live.DataChanged(batch.RunId);
                     }
                     Interlocked.Add(ref skipped, batch.Events.Length - missing.Length);
                     // Acknowledge only after the ClickHouse insert succeeds.
                     await receiver.CompleteMessageAsync(message, stoppingToken);
                     Interlocked.Increment(ref completed);
+                    Notify();
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { throw; }
                 catch (Exception ex)
                 {
-                    lastError = ex.GetType().Name;
+                    UpdateState("Retrying", ex.GetType().Name);
                     logger.LogWarning("Sales batch will be retried: {FailureType}", lastError);
                     try { await receiver.AbandonMessageAsync(message, cancellationToken: stoppingToken); }
                     catch (ServiceBusException) { /* A lost lock permits broker redelivery. */ }
-                    state = "Retrying";
                     await Task.Delay(1500, stoppingToken);
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception ex)
             {
-                state = "Connecting";
-                lastError = ex.GetType().Name;
+                UpdateState("Connecting", ex.GetType().Name);
                 logger.LogWarning("Service Bus worker is reconnecting: {FailureType}", lastError);
                 await Task.Delay(2000, stoppingToken);
             }
         }
-        state = "Stopped";
+        UpdateState("Stopped");
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)

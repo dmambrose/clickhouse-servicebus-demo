@@ -56,3 +56,17 @@ The dashboard is available at http://localhost:5088 while its Docker services ar
 - Individual run still returned 10,000 events and 3,192,962.50 USD after correcting the recent-events run column alias.
 - XHTML parses as XML; JavaScript syntax check passed; deployed assets include the All runs behavior.
 - Browser preview reload could not complete because the in-app browser reported a connection reset; updated visual interactions were not reverified in this iteration. The local HTTP page and API were reachable and tested separately.
+
+## Server-Sent Events update
+
+- Release solution build passed with 0 warnings and 0 errors.
+- JavaScript syntax, XHTML XML parsing, and whitespace checks passed.
+- Dashboard uses EventSource and named SSE events instead of periodic browser polling.
+- LiveUpdatesSmoke passed: two subscribers, pause broadcasts, independent disconnects, direct inserts, reconnect snapshots, and exact run totals.
+- ServiceBusSmoke passed: pause/queue/resume, worker SSE notification, 10,000 verified rows, replay protection, and poison-message dead lettering.
+- Final Docker UI image built and started successfully without restarting the database or broker.
+- Browser automatically reconnected after the UI container restart without a page reload.
+- Browser queued a new run and displayed verified progress and aggregate updates from 730,000 to 740,000 events; total revenue reached 236,279,225.00 USD.
+- Browser showed Live · SSE and 10 messages sent/handled with no dead-lettered messages in the new app session.
+
+See LIVE-UPDATES.md for event behavior, reconnect handling, and the per-process notification limitation.

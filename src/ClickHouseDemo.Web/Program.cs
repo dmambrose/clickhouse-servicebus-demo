@@ -8,6 +8,7 @@ builder.Services.AddSingleton(_ => new ClickHouseClient(
     Environment.GetEnvironmentVariable("CLICKHOUSE_CONNECTION_STRING")
     ?? "Host=localhost;Port=8123;Protocol=http;Database=demo;Username=demo;Password=demo_password;UseCustomDecimals=false;Timeout=30"));
 builder.Services.AddSingleton<DemoDatabase>();
+builder.Services.AddSingleton<LiveUpdates>();
 builder.Services.AddSingleton<ServiceBusPipeline>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ServiceBusPipeline>());
 var app = builder.Build();
@@ -29,6 +30,8 @@ app.Use(async (context, next) =>
 });
 app.UseStaticFiles();
 app.MapGet("/", () => Results.File(Path.Combine(app.Environment.WebRootPath, "index.xhtml"), "application/xhtml+xml; charset=utf-8"));
+app.MapGet("/api/events", (HttpContext context, LiveUpdates live, ServiceBusPipeline pipeline, IHostApplicationLifetime lifetime)
+    => live.Stream(context, pipeline.Snapshot, lifetime.ApplicationStopping));
 app.MapGet("/api/runs", async (DemoDatabase db, CancellationToken ct) =>
 {
     await db.EnsureSchema(ct);
@@ -64,7 +67,7 @@ app.MapGet("/api/dashboard", async (Guid? runId, string? country, DemoDatabase d
     foreach (var (key, sql) in statements) reports[key] = await db.Query(sql, p, ct);
     return Results.Ok(new { runId, country = country ?? "", totals, reports, elapsedMs = timer.ElapsedMilliseconds });
 });
-app.MapPost("/api/seed", async (HttpRequest request, DemoDatabase db, CancellationToken ct) =>
+app.MapPost("/api/seed", async (HttpRequest request, DemoDatabase db, LiveUpdates live, CancellationToken ct) =>
 {
     if (request.Headers["X-Demo-Request"] != "1")
         return Results.BadRequest(new { error = "Use the dashboard to load sample data." });
@@ -86,6 +89,7 @@ app.MapPost("/api/seed", async (HttpRequest request, DemoDatabase db, Cancellati
         var validated = inserted == rows.Count && Convert.ToInt64(check.Rows[0][0], CultureInfo.InvariantCulture) == rows.Count
             && Convert.ToDecimal(check.Rows[0][1], CultureInfo.InvariantCulture) == rows.Sum(e => e.Quantity * e.UnitPrice);
         if (!validated) throw new InvalidOperationException("Sample validation failed.");
+        live.DataChanged(runId);
         return Results.Ok(new { runId, inserted, elapsedMs = timer.ElapsedMilliseconds, validated });
     }
     finally { db.InsertGate.Release(); }

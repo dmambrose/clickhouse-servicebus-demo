@@ -32,7 +32,7 @@ The worker is a C# `BackgroundService` hosted in the ASP.NET Core app. It uses `
 
 Before inserting, the worker checks event IDs within the same run. This prevents ordinary redeliveries from re-inserting records with this single sequential worker, including recovery after an insert succeeded but acknowledgment was interrupted. This is a demo safeguard, not a distributed exactly-once guarantee. Do not scale multiple worker replicas without a stronger idempotency design. Publishing is not a transaction across the full run: an interrupted send can leave a partial run.
 
-Counters describe this app session, not broker queue depth. Progress and verification come from actual ClickHouse records. The dashboard refreshes when the worker stores new events, including loads initiated outside the browser. Closing the browser does not stop delivery; reopen it to see the current aggregate. Restarting the web app resets its counters and pause state.
+Counters describe this app session, not broker queue depth. Progress and verification come from actual ClickHouse records. The server pushes updates through SSE when the worker stores events, including queued loads initiated outside the browser. Closing the browser does not stop delivery; reopen it to see the current aggregate. Restarting the web app resets its counters and pause state. See [LIVE-UPDATES.md](LIVE-UPDATES.md) for the event stream and reconnect behavior.
 
 Queued data and entities do not persist across emulator restarts. ClickHouse records already inserted remain stored. The emulator is for development and tests, not production, and is not the Azure cloud service.
 

@@ -15,10 +15,11 @@ let loading = false;
 let busEnabled = false;
 let pipelineReady = false;
 let pendingBusRun = null;
-let pipelinePolling = false;
 let pipelinePaused = false;
-let lastStoredEvents = -1;
-let observedWorkerEvents = -1;
+let lastProgress = null;
+let observedRevision = null;
+let refreshRequested = false;
+let liveRefreshing = false;
 
 function notify(text, error = false) {
   $('notice').textContent = text;
@@ -37,6 +38,7 @@ function busy(value) {
   ['seed', 'refresh', 'run', 'country'].forEach(id => { $(id).disabled = value; });
   $('queue-events').disabled = value || !pipelineReady || pendingBusRun !== null;
   $('refresh').setAttribute('class', value ? 'icon-button pulse' : 'icon-button');
+  if (!value) queueMicrotask(drainLiveUpdates);
 }
 async function api(url, options = {}) {
   const response = await fetch(url, { ...options, headers: { 'X-Demo-Request':'1' }, signal: AbortSignal.timeout(90000) });
@@ -195,11 +197,7 @@ $('copy-sql').addEventListener('click',async()=>{
 });
 action(()=>loadRuns());
 
-async function pollPipeline() {
-  if (pipelinePolling) return;
-  pipelinePolling = true;
-  try {
-    const state = await api('/api/pipeline');
+function renderPipeline(state) {
     busEnabled = state.enabled;
     pipelineReady = busEnabled && ['Ready','Paused','Processing'].includes(state.state);
     pipelinePaused = state.paused;
@@ -211,31 +209,45 @@ async function pollPipeline() {
     $('worker-status').textContent = 'Worker: ' + state.state + (state.lastError ? ' · Reconnecting / retrying' : '');
     $('pipeline-counters').textContent = number(state.publishedMessages) + ' messages sent · ' + number(state.completedMessages) + ' handled · ' + number(state.deadLetteredMessages) + ' dead-lettered (this app session)';
     $('pause-worker').textContent = state.paused ? 'Resume worker' : 'Pause worker';
-    if (!pendingBusRun && state.storedEvents !== observedWorkerEvents && !loading) {
-      observedWorkerEvents = state.storedEvents;
-      await action(()=>loadRuns($('run').value || 'all'));
+    if (pendingBusRun && lastProgress) renderProgress(lastProgress);
+}
+function renderProgress(progress) {
+  $('ingestion-progress').value = Math.min(progress.storedEvents,progress.expectedEvents);
+  $('ingestion-detail').textContent = 'Run ' + progress.runId.slice(0,8) + ' · ' + number(progress.storedEvents) + ' / ' + number(progress.expectedEvents)
+    + ' events in ClickHouse · ' + money(progress.revenue)
+    + (progress.verified ? ' · Verified ✓' : pipelinePaused ? ' · Worker paused; messages wait in the queue.' : '');
+}
+function requestLiveRefresh(revision) {
+  if (revision !== undefined) {
+    if (revision === observedRevision) return;
+    observedRevision = revision;
+  }
+  refreshRequested = true;
+  queueMicrotask(drainLiveUpdates);
+}
+async function drainLiveUpdates() {
+  if (liveRefreshing || loading || !refreshRequested) return;
+  liveRefreshing = true;
+  try {
+    // Coalesce bursts and retain notifications that arrive while a button request/report is running.
+    while (refreshRequested && !loading) {
+      refreshRequested = false;
+      let verified = false;
+      let mismatch = false;
+      await action(async()=>{
+        if (pendingBusRun) {
+          lastProgress = await api('/api/ingestion/' + pendingBusRun);
+          renderProgress(lastProgress);
+          verified = lastProgress.verified;
+          mismatch = lastProgress.storedEvents > lastProgress.expectedEvents;
+          if (verified || mismatch) pendingBusRun = null;
+        }
+        await loadRuns($('run').value || 'all');
+      });
+      if (verified) notify('Service Bus delivery verified ✓ 10,000 events are stored in ClickHouse. The aggregate includes the new sales.');
+      if (mismatch) notify('This run contains unexpected extra events. Inspect its records before loading more.',true);
     }
-    if (!pendingBusRun) return;
-    const progress = await api('/api/ingestion/' + pendingBusRun);
-    $('ingestion-progress').value = Math.min(progress.storedEvents,progress.expectedEvents);
-    $('ingestion-detail').textContent = 'Run ' + pendingBusRun.slice(0,8) + ' · ' + number(progress.storedEvents) + ' / ' + number(progress.expectedEvents) + ' events in ClickHouse · ' + money(progress.revenue) + (state.paused ? ' · Worker paused; messages wait in the queue.' : '');
-    if (progress.verified) {
-      pendingBusRun = null;
-      if (!loading) await action(()=>loadRuns('all'));
-      $('ingestion-detail').textContent += ' · Verified ✓';
-      notify('Service Bus delivery verified ✓ 10,000 events are stored in ClickHouse. The All runs totals include the new sales.');
-      $('queue-events').disabled = loading;
-    } else if (progress.storedEvents > progress.expectedEvents) {
-      pendingBusRun = null;
-      notify('This run contains unexpected extra events. Inspect its records before loading more.',true);
-      $('queue-events').disabled = loading;
-    } else if (progress.storedEvents !== lastStoredEvents && !loading) {
-      lastStoredEvents = progress.storedEvents;
-      await action(()=>loadDashboard());
-    }
-  } catch (error) {
-    if (busEnabled) $('worker-status').textContent = 'Pipeline status unavailable. Check the emulator and retry.';
-  } finally { pipelinePolling=false; }
+  } finally { liveRefreshing=false; }
 }
 $('queue-events').addEventListener('click',async()=>{
   if (loading || pendingBusRun) return;
@@ -245,7 +257,7 @@ $('queue-events').addEventListener('click',async()=>{
     notify('Sending sales through Service Bus. The worker will load them into ClickHouse in the background.');
     const result = await api('/api/queue',{method:'POST'});
     pendingBusRun = result.runId;
-    lastStoredEvents = -1;
+    lastProgress = null;
     $('country').value='';
     $('ingestion-progress').value=0;
     $('ingestion-detail').textContent=number(result.queuedMessages)+' messages queued, carrying '+number(result.queuedEvents)+' sales events. Waiting for the C# worker…';
@@ -256,16 +268,29 @@ $('queue-events').addEventListener('click',async()=>{
   } finally {
     $('queue-label').textContent='Queue 10,000 events';
     busy(false);
-    await pollPipeline();
+    requestLiveRefresh();
   }
 });
 $('pause-worker').addEventListener('click',async()=>{
   $('pause-worker').disabled=true;
   try {
-    await api('/api/pipeline/pause?paused='+(!pipelinePaused),{method:'POST'});
-    await pollPipeline();
+    renderPipeline(await api('/api/pipeline/pause?paused='+(!pipelinePaused),{method:'POST'}));
   } catch(error) { notify('Could not change the worker state. Please retry.',true); }
   finally { $('pause-worker').disabled=false; }
 });
-pollPipeline();
-setInterval(pollPipeline,2500);
+const live = new EventSource('/api/events');
+live.onopen = () => {
+  $('live-status').textContent='Live · SSE';
+  $('live-status').setAttribute('class','live-status');
+  requestLiveRefresh(); // Always resync after a reconnect, including a server restart.
+};
+live.addEventListener('pipeline', event => {
+  const state = JSON.parse(event.data);
+  renderPipeline(state);
+  requestLiveRefresh(state.dataRevision);
+});
+live.addEventListener('dataChanged', event => requestLiveRefresh(JSON.parse(event.data).dataRevision));
+live.onerror = () => {
+  $('live-status').textContent='SSE reconnecting…';
+  $('live-status').setAttribute('class','live-status reconnecting');
+};
